@@ -12,9 +12,11 @@ int main(int argc, char **argv)
   int nprocs, i, iam, n, left, right, count;
   int tag1, tag2, k;
   double *h, *hnew;
-  double h0=1.0, hL=0.1;
-  double time1, time2, mflops, total_time;
+  double h0=1.0, hL=0.0,q=0;
+  double time1, time2, mflops, total_time,K1,K2,K3;
+  double a = 0.007, b= -0.07, c=0.2, C0 = 1.2, C1 = 2.1;
   double errsq, error, hanal, sumsqerr;
+  double Qs=0, Qt, Qfinal,Q,f,t; 
   MPI_Status status;
 
 /* initialize MPI */
@@ -40,11 +42,12 @@ int main(int argc, char **argv)
   for (i=0; i <= n+1; i++) h[i] = 0.0;
   if (iam == 0) h[0] = h0;
   if (iam == nprocs - 1) h[n+1] = hL;
- 
+
   if(iam == 0) left = MPI_PROC_NULL;
        else left = iam - 1;
   if(iam == nprocs - i) right = MPI_PROC_NULL;
        else right = iam + 1;
+
 
 /* iterate */
   for (k=1; k <= nit; k++)
@@ -60,9 +63,16 @@ int main(int argc, char **argv)
            (&h[1], count, MPI_DOUBLE, left, tag2, MPI_COMM_WORLD); 
 /* if i am not processor nprocs-1 receive from right neighbor */
        if (iam != nprocs - 1) MPI_Recv
-           (&h[n+1], count, MPI_DOUBLE, right, tag2, MPI_COMM_WORLD, &status);
-/* compute interior */
-       for (i = 1; i <= n; i++) hnew[i] = (h[i-1]+h[i+1])/2.0;
+           (&h[n+1], count, MPI_DOUBLE, right, tag2, MPI_COMM_WORLD, &status);/* compute interior */
+       for (i = 1; i <= n; i++) 
+            K1 = 0.007*((iam*n+i-1)/1000)*((iam*n+i-1)/1000) + (-0.07)*((iam*n+i-1)/1000) + 0.2; 
+            K2 = 0.007*((iam*n+i)/1000)*((iam*n+i)/1000) + (-0.07)*((iam*n+i)/1000) + 0.2; 
+            K3 = 0.007*((iam*n+i+1)/1000)*((iam*n+i+1)/1000)+ (-0.07)*((iam*n+i+1)/1000)+ 0.2; 
+            hnew[i] = ((K2+K1)*h[i+1] + (K1+K3)*h[i-1])/(K2+2*K1+K3); 
+            Qs = Qs+ (K1 * 100 * (hnew[i+1] - hnew[i])*1000);
+    Qt = Qs * (iam*n+i)/(size+1);
+    MPI_Reduce(&Qt, &Qs, 1, MPI_DOUBLE, MPI_SUM, 0,
+       MPI_COMM_WORLD);
 /* update */
        for (i = 1; i <= n; i++) h[i] = hnew[i];
 /* preserve boundary values */
@@ -76,20 +86,26 @@ int main(int argc, char **argv)
    total_time=time2-time1;
    mflops = 2*nit*size*1e-6/(total_time);
 
+
 /* check against analytical solution */
    errsq=0;
    for (i=1; i <=n; i++) {
-       hanal = h0+(hL-h0)*(iam*n+i)/(size+1);
+        t = (iam*n+i)/1000;
+	f = sqrt(4*a*c - b*b);
+	f = (2 / f) * atan((2*a*t + b) / f);
+
+       hanal = C0*f + C1;
        errsq = errsq + (hanal-h[i])*(hanal-h[i]);
        }
-   MPI_Reduce(&errsq, &sumsqerr, 1, MPI_DOUBLE, MPI_SUM, 0,
+     MPI_Reduce(&errsq, &sumsqerr, 1, MPI_DOUBLE, MPI_SUM, 0,
        MPI_COMM_WORLD);
-   error = sqrt(sumsqerr)/size;
+     error = sqrt(sumsqerr)/size; 
 /* print results */
    if (iam == 0) {
        printf("Total time  = %g secs\n",total_time);
        printf("Mflops  = %g\n",mflops);
-       printf("Error  = %.16f\n",sumsqerr);
+        printf("Error  = %.16f\n", error);
+       printf("Leakage FLux = %g\n",Qt);
    }
 
    MPI_Finalize();
